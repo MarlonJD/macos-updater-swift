@@ -66,4 +66,50 @@ final class ReleaseToolingTests: XCTestCase {
         XCTAssertTrue(dryRun.contains("/archives/\(archiveSHA).zip"))
         XCTAssertTrue(dryRun.contains("latest.json"))
     }
+
+    func testFullArchiveBuilderUsesDittoWithMacOSBundleSafeFlags() throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let appURL = root.appendingPathComponent("Test.app")
+        try FileManager.default.createDirectory(at: appURL, withIntermediateDirectories: true)
+
+        let runner = RecordingReleaseCommandRunner()
+        let metadata = try FullArchiveBuilder(commandRunner: runner).createZipArchive(
+            appBundleURL: appURL,
+            releasePrefix: "desktop/macos/stable/releases/1.4.3+1848",
+            outputDirectory: root.appendingPathComponent("out")
+        )
+
+        XCTAssertEqual(runner.executablePath, "/usr/bin/ditto")
+        XCTAssertTrue(runner.arguments.contains("-c"))
+        XCTAssertTrue(runner.arguments.contains("-k"))
+        XCTAssertTrue(runner.arguments.contains("--keepParent"))
+        XCTAssertTrue(runner.arguments.contains("--sequesterRsrc"))
+        XCTAssertEqual(runner.arguments.suffix(2).first, appURL.path)
+        XCTAssertTrue(metadata.storageKey.hasPrefix("desktop/macos/stable/releases/1.4.3+1848/archives/"))
+        XCTAssertTrue(metadata.storageKey.hasSuffix(".zip"))
+    }
+
+    private func temporaryDirectory() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+}
+
+private final class RecordingReleaseCommandRunner: ReleaseCommandRunning {
+    private(set) var executablePath = ""
+    private(set) var arguments: [String] = []
+
+    func run(_ executablePath: String, arguments: [String]) throws -> String {
+        self.executablePath = executablePath
+        self.arguments = arguments
+
+        guard let outputPath = arguments.last else {
+            return ""
+        }
+        let outputURL = URL(fileURLWithPath: outputPath)
+        try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("zip-fixture".utf8).write(to: outputURL)
+        return ""
+    }
 }

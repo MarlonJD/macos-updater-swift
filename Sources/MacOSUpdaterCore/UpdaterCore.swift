@@ -249,6 +249,7 @@ public struct UpdaterCore {
             try fileManager.copyItem(at: sourceURL, to: targetURL)
         case .symlink:
             let destination = try fileManager.destinationOfSymbolicLink(atPath: sourceURL.path)
+            try UpdaterPath.validateBundleRelativeSymlinkDestination(destination, linkPath: operation.path)
             try fileManager.createSymbolicLink(atPath: targetURL.path, withDestinationPath: destination)
         }
 
@@ -309,6 +310,7 @@ public struct UpdaterCore {
         guard let destination = operation.symlinkDestination else {
             throw UpdaterCoreError.verificationFailed("Missing symlink destination for \(operation.path).")
         }
+        try UpdaterPath.validateBundleRelativeSymlinkDestination(destination, linkPath: operation.path)
         let targetURL = stagedAppURL.appendingPathComponent(operation.path)
         try UpdaterFileSystem.createParentDirectory(for: targetURL, fileManager: fileManager)
         if fileManager.fileExists(atPath: targetURL.path) || (try? UpdaterFileSystem.kind(at: targetURL)) == .symlink {
@@ -372,8 +374,12 @@ public struct UpdaterCore {
                     try verifyMode(mode, at: url, path: entry.path)
                 }
             case .symlink:
+                guard let expectedDestination = entry.symlinkDestination else {
+                    throw UpdaterCoreError.verificationFailed("Missing symlink destination for \(entry.path).")
+                }
+                try UpdaterPath.validateBundleRelativeSymlinkDestination(expectedDestination, linkPath: entry.path)
                 let destination = try fileManager.destinationOfSymbolicLink(atPath: url.path)
-                guard destination == entry.symlinkDestination else {
+                guard destination == expectedDestination else {
                     throw UpdaterCoreError.verificationFailed("Symlink destination mismatch for \(entry.path).")
                 }
             }
@@ -392,14 +398,13 @@ public struct UpdaterCore {
             return
         }
         let expectedPaths = expectedPathsIncludingAncestors(for: targetManifest)
-        let rootPath = stagedAppURL.standardizedFileURL.path
+        let rootPaths = bundleRootPaths(for: stagedAppURL)
         var extraURLs: [URL] = []
         for case let itemURL as URL in enumerator {
-            let itemPath = itemURL.standardizedFileURL.path
-            guard itemPath.hasPrefix(rootPath + "/") else {
+            let itemPath = itemURL.path
+            guard let relativePath = bundleRelativePath(for: itemPath, rootPaths: rootPaths) else {
                 continue
             }
-            let relativePath = String(itemPath.dropFirst(rootPath.count + 1))
             if !expectedPaths.contains(relativePath) {
                 extraURLs.append(itemURL)
             }
@@ -419,6 +424,21 @@ public struct UpdaterCore {
             }
         }
         return paths
+    }
+
+    private func bundleRootPaths(for appBundleURL: URL) -> [String] {
+        var paths = Set([appBundleURL.path, appBundleURL.resolvingSymlinksInPath().path])
+        if let realPath = UpdaterFileSystem.realPath(for: appBundleURL) {
+            paths.insert(realPath)
+        }
+        return Array(paths).sorted { $0.count > $1.count }
+    }
+
+    private func bundleRelativePath(for itemPath: String, rootPaths: [String]) -> String? {
+        for rootPath in rootPaths where itemPath.hasPrefix(rootPath + "/") {
+            return String(itemPath.dropFirst(rootPath.count + 1))
+        }
+        return nil
     }
 
     private func verifyStagedApp(at stagedAppURL: URL, targetManifest: TargetFileManifest) throws {

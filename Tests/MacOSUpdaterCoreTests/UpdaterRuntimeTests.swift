@@ -131,6 +131,60 @@ final class UpdaterRuntimeTests: XCTestCase {
         XCTAssertEqual(verifier.contexts.first?.expectedBundleIdentifier, "com.radlof.emsi-swift")
     }
 
+    func testDeltaRejectsUnsafeSymlinkDestinations() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let baseApp = root.appendingPathComponent("Base.app")
+        try makeAppBundle(at: baseApp, marker: "old", codeResources: "signature-old")
+
+        for (index, destination) in ["/tmp/outside", "../outside"].enumerated() {
+            let targetManifest = TargetFileManifest(
+                releaseID: ReleaseID(version: try SemanticVersion("1.4.3"), buildNumber: 1848 + index),
+                bundleIdentifier: "com.radlof.emsi-swift",
+                teamIdentifier: "UPK4SC93AN",
+                generatedAt: Date(timeIntervalSince1970: 1),
+                entries: [
+                    FileManifestEntry(
+                        path: "Contents/Resources/current.txt",
+                        kind: .symlink,
+                        symlinkDestination: destination
+                    )
+                ]
+            )
+            let deltaManifest = DeltaManifest(
+                baseReleaseID: ReleaseID(version: try SemanticVersion("1.4.2"), buildNumber: 1847),
+                targetReleaseID: targetManifest.releaseID,
+                operations: [
+                    DeltaOperation(
+                        kind: .setSymlink,
+                        path: "Contents/Resources/current.txt",
+                        symlinkDestination: destination
+                    )
+                ]
+            )
+            let core = UpdaterCore(
+                policy: policy(),
+                bundleVerifier: RecordingStagedBundleVerifier(),
+                stateStore: UpdateDownloadStateStore(stateURL: root.appendingPathComponent("state-\(index).json"))
+            )
+
+            do {
+                _ = try await core.stageDelta(
+                    deltaManifest: deltaManifest,
+                    targetManifest: targetManifest,
+                    baseAppURL: baseApp,
+                    assetLocator: UpdateAssetLocator(baseURL: root.appendingPathComponent("assets")),
+                    stagingDirectory: root.appendingPathComponent("staging-\(index)")
+                )
+                XCTFail("Expected unsafe symlink destination to be rejected.")
+            } catch UpdaterCoreError.verificationFailed(let message) {
+                XCTAssertTrue(message.contains("Unsafe symlink destination"))
+                XCTAssertTrue(message.contains(destination))
+            }
+        }
+    }
+
     func testInstallerRollsBackWhenLaunchFails() throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

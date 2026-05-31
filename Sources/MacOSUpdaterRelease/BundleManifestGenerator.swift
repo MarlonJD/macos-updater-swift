@@ -31,6 +31,7 @@ public enum ReleaseGeneratorError: Error, Equatable, LocalizedError {
     case missingPayload(String)
     case missingSignatureSidecar(String)
     case invalidArchive(String)
+    case invalidSymlinkDestination(path: String, destination: String)
 
     public var errorDescription: String? {
         switch self {
@@ -46,6 +47,8 @@ public enum ReleaseGeneratorError: Error, Equatable, LocalizedError {
             return "Delta is missing required signature sidecar payload: \(path)."
         case .invalidArchive(let path):
             return "Invalid full archive: \(path)."
+        case .invalidSymlinkDestination(let path, let destination):
+            return "Invalid symlink destination for \(path): \(destination)."
         }
     }
 }
@@ -70,15 +73,14 @@ public struct BundleManifestGenerator {
             throw ReleaseGeneratorError.appBundleNotFound(appBundleURL.path)
         }
 
-        let rootPath = appBundleURL.standardizedFileURL.path
+        let rootPaths = bundleRootPaths(for: appBundleURL)
         var entries: [FileManifestEntry] = []
         for case let itemURL as URL in enumerator {
-            let itemPath = itemURL.standardizedFileURL.path
-            guard itemPath.hasPrefix(rootPath + "/") else {
+            let itemPath = itemURL.path
+            guard let relativePath = bundleRelativePath(for: itemPath, rootPaths: rootPaths) else {
                 continue
             }
 
-            let relativePath = String(itemPath.dropFirst(rootPath.count + 1))
             try ReleasePath.validateBundleRelativePath(relativePath)
             let statInfo = try ReleaseFileSystem.lstatInfo(at: itemURL)
             let mode = UInt16(statInfo.st_mode & 0o777)
@@ -108,13 +110,15 @@ public struct BundleManifestGenerator {
                     )
                 )
             case .symlink:
+                let destination = try fileManager.destinationOfSymbolicLink(atPath: itemURL.path)
+                try ReleasePath.validateBundleRelativeSymlinkDestination(destination, linkPath: relativePath)
                 entries.append(
                     FileManifestEntry(
                         path: relativePath,
                         kind: .symlink,
                         executable: false,
                         mode: mode,
-                        symlinkDestination: try fileManager.destinationOfSymbolicLink(atPath: itemURL.path),
+                        symlinkDestination: destination,
                         codeUnitIdentifier: codeUnitPath(for: relativePath)
                     )
                 )
@@ -128,6 +132,21 @@ public struct BundleManifestGenerator {
             generatedAt: metadata.generatedAt,
             entries: entries.sorted(by: ReleaseFileSystem.sortEntriesForStaging)
         )
+    }
+
+    private func bundleRootPaths(for appBundleURL: URL) -> [String] {
+        var paths = Set([appBundleURL.path, appBundleURL.resolvingSymlinksInPath().path])
+        if let realPath = ReleaseFileSystem.realPath(for: appBundleURL) {
+            paths.insert(realPath)
+        }
+        return Array(paths).sorted { $0.count > $1.count }
+    }
+
+    private func bundleRelativePath(for itemPath: String, rootPaths: [String]) -> String? {
+        for rootPath in rootPaths where itemPath.hasPrefix(rootPath + "/") {
+            return String(itemPath.dropFirst(rootPath.count + 1))
+        }
+        return nil
     }
 
     private func codeUnitPath(for relativePath: String) -> String {
@@ -157,6 +176,20 @@ enum ReleasePath {
             throw ReleaseGeneratorError.invalidRelativePath(path)
         }
     }
+
+    static func validateBundleRelativeSymlinkDestination(_ destination: String, linkPath: String) throws {
+        guard isBundleRelativeSymlinkDestination(destination) else {
+            throw ReleaseGeneratorError.invalidSymlinkDestination(path: linkPath, destination: destination)
+        }
+    }
+
+    private static func isBundleRelativeSymlinkDestination(_ destination: String) -> Bool {
+        guard !destination.isEmpty, !destination.hasPrefix("/") else {
+            return false
+        }
+        let components = destination.split(separator: "/", omittingEmptySubsequences: false)
+        return components.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
 }
 
 enum ReleaseFileSystem {
@@ -166,6 +199,19 @@ enum ReleaseFileSystem {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
         return statInfo
+    }
+
+    static func realPath(for url: URL) -> String? {
+        url.withUnsafeFileSystemRepresentation { path in
+            guard let path else {
+                return nil
+            }
+            var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+            guard realpath(path, &buffer) != nil else {
+                return nil
+            }
+            return String(cString: buffer)
+        }
     }
 
     static func bundleEntryKind(for mode: mode_t, path: String) throws -> BundleEntryKind {

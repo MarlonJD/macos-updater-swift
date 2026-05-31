@@ -506,6 +506,21 @@ swift run macos-updater-release full-archive \
   --build 1848
 ```
 
+Full fallback archives are created with `/usr/bin/ditto -c -k --keepParent
+--sequesterRsrc`. Do not use the default `/usr/bin/zip -r` path for `.app`
+bundles because it can dereference framework symlinks into regular files or
+directories. Do not unzip and re-zip release artifacts in CI, object storage
+automation, CDN tooling, or manual recovery steps. S3 and CloudFront should
+serve the archive bytes produced by the release tool without transformation.
+
+Symlinks are represented as manifest entries, not compressed file payloads. The
+release manifest generator rejects symlink destinations that are absolute,
+empty, contain `.`, contain `..`, or otherwise rely on path traversal. Runtime
+staging repeats that validation before creating or accepting symlinks, then
+verifies the staged app with hashes, file kinds, modes, `codesign`, `spctl`,
+`xcrun stapler validate`, bundle identifier, and team identifier checks before
+replacement.
+
 Generate the release manifest after the full archive exists:
 
 ```sh

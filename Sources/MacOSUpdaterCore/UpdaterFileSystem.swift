@@ -15,6 +15,20 @@ enum UpdaterPath {
             throw UpdaterCoreError.invalidRelativePath(path)
         }
     }
+
+    static func validateBundleRelativeSymlinkDestination(_ destination: String, linkPath: String) throws {
+        guard isBundleRelativeSymlinkDestination(destination) else {
+            throw UpdaterCoreError.verificationFailed("Unsafe symlink destination for \(linkPath): \(destination).")
+        }
+    }
+
+    private static func isBundleRelativeSymlinkDestination(_ destination: String) -> Bool {
+        guard !destination.isEmpty, !destination.hasPrefix("/") else {
+            return false
+        }
+        let components = destination.split(separator: "/", omittingEmptySubsequences: false)
+        return components.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
 }
 
 enum UpdaterFileSystem {
@@ -24,6 +38,19 @@ enum UpdaterFileSystem {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
         return statInfo
+    }
+
+    static func realPath(for url: URL) -> String? {
+        url.withUnsafeFileSystemRepresentation { path in
+            guard let path else {
+                return nil
+            }
+            var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+            guard realpath(path, &buffer) != nil else {
+                return nil
+            }
+            return String(cString: buffer)
+        }
     }
 
     static func kind(at url: URL) throws -> BundleEntryKind {

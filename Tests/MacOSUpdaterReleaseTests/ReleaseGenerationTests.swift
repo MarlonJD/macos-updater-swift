@@ -161,6 +161,43 @@ final class ReleaseGenerationTests: XCTestCase {
         XCTAssertEqual(release.notarization?.staplerValidated, true)
     }
 
+    func testTargetManifestRejectsUnsafeSymlinkDestinations() throws {
+        for destination in ["/tmp/outside", "../outside"] {
+            let root = temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let targetApp = root.appendingPathComponent("Target.app")
+            try makeAppBundle(
+                at: targetApp,
+                executableText: "executable",
+                resourceText: "resource",
+                codeResourcesText: "root-signature",
+                nestedExecutableText: "nested",
+                nestedCodeResourcesText: "nested-signature",
+                includesDeletedFile: false,
+                includesNewFile: true
+            )
+
+            try FileManager.default.createSymbolicLink(
+                atPath: targetApp.appendingPathComponent("Contents/Resources/unsafe.txt").path,
+                withDestinationPath: destination
+            )
+
+            XCTAssertThrowsError(
+                try BundleManifestGenerator().makeTargetManifest(
+                    appBundleURL: targetApp,
+                    metadata: metadata(version: "1.4.3", build: 1848)
+                )
+            ) { error in
+                guard case ReleaseGeneratorError.invalidSymlinkDestination(let path, let rejectedDestination) = error else {
+                    return XCTFail("Expected invalid symlink destination, got \(error).")
+                }
+                XCTAssertEqual(path, "Contents/Resources/unsafe.txt")
+                XCTAssertEqual(rejectedDestination, destination)
+            }
+        }
+    }
+
     private func metadata(version: String, build: Int) throws -> BundleManifestMetadata {
         BundleManifestMetadata(
             releaseID: ReleaseID(version: try SemanticVersion(version), buildNumber: build),
