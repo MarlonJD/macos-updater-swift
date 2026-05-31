@@ -31,17 +31,20 @@ final class ReleaseToolingTests: XCTestCase {
     func testDistributionKeyPlannerBuildsSafeUploadOrderAndDryRun() throws {
         let planner = DistributionKeyPlanner(bucketName: "emsi-updates-prod")
         let payloadSHA = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        let archiveSHA = "bbbbbb0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
         let plan = planner.plan(
             channel: .stable,
             version: try SemanticVersion("1.4.3"),
             buildNumber: 1848,
             baseBuildNumber: 1847,
-            payloadSHA256Values: [payloadSHA]
+            payloadSHA256Values: [payloadSHA],
+            fullArchiveSHA256: archiveSHA
         )
 
         XCTAssertEqual(plan.releaseID.description, "1.4.3+1848")
         XCTAssertEqual(plan.uploadObjects.map(\.role), [
             .payload,
+            .fullArchive,
             .targetFileManifest,
             .deltaManifest,
             .releaseManifest,
@@ -51,11 +54,16 @@ final class ReleaseToolingTests: XCTestCase {
             plan.uploadObjects.first?.s3Key,
             "desktop/macos/stable/releases/1.4.3+1848/payloads/ab/cd/\(payloadSHA).lzfse"
         )
+        XCTAssertEqual(
+            plan.uploadObjects[1].s3Key,
+            "desktop/macos/stable/releases/1.4.3+1848/archives/\(archiveSHA).zip"
+        )
         XCTAssertEqual(plan.cloudFrontInvalidationPaths, ["/desktop/macos/stable/latest.json"])
 
         let dryRun = plan.dryRunText()
         XCTAssertTrue(dryRun.contains("Dry run: macOS update distribution plan"))
         XCTAssertTrue(dryRun.contains("delta-from-1847-to-1848.json"))
+        XCTAssertTrue(dryRun.contains("/archives/\(archiveSHA).zip"))
         XCTAssertTrue(dryRun.contains("latest.json"))
     }
 }

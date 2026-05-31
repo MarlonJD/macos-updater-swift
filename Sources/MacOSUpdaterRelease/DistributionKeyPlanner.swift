@@ -6,6 +6,7 @@ import MacOSUpdaterManifest
 
 public enum DistributionObjectRole: String, Codable, Sendable {
     case payload
+    case fullArchive
     case targetFileManifest
     case deltaManifest
     case releaseManifest
@@ -81,7 +82,8 @@ public struct DistributionKeyPlanner: Sendable {
         version: SemanticVersion,
         buildNumber: Int,
         baseBuildNumber: Int?,
-        payloadSHA256Values: [String] = []
+        payloadSHA256Values: [String] = [],
+        fullArchiveSHA256: String? = nil
     ) -> DistributionPlan {
         let releaseID = ReleaseID(version: version, buildNumber: buildNumber)
         let channelPrefix = "\(platformPrefix)/\(channel.rawValue)"
@@ -91,6 +93,16 @@ public struct DistributionKeyPlanner: Sendable {
                 role: .payload,
                 s3Key: "\(releasePrefix)/payloads/\(payloadPathComponent(for: payloadSHA256)).lzfse",
                 immutable: true
+            )
+        }
+
+        if let fullArchiveSHA256 {
+            uploadObjects.append(
+                DistributionObject(
+                    role: .fullArchive,
+                    s3Key: "\(releasePrefix)/archives/\(fullArchiveSHA256.lowercased()).zip",
+                    immutable: true
+                )
             )
         }
 

@@ -69,11 +69,17 @@ import MacOSUpdaterRelease
 
 ## Current Status
 
-This is the bootstrap package. It is ready for manifest modeling, signing,
-verification, release-state handling, changelog drafting, distribution-key
-planning, and installer dry-run request validation. It does not yet perform a
-production app replacement, privileged helper registration, payload download,
-payload decompression, or host-app UI integration.
+This package implements the reusable updater foundation: signed manifest
+models, SHA-256 hashing, SemVer/build-number release state, Conventional
+Commits changelog drafts, target file manifests, delta manifests,
+content-addressed LZFSE payload generation, full signed/notarized/stapled
+`.zip` archive metadata, S3/CloudFront dry-run planning, runtime staging from
+delta payloads or full archive fallback, and transactional installer helper
+logic.
+
+The package still intentionally leaves host-app embedding, entitlements,
+privileged helper registration, update UI, telemetry wiring, and production
+release credentials to the consuming macOS app.
 
 ## Command Line Usage
 
@@ -100,7 +106,8 @@ swift run macos-updater-release plan-keys \
   --version 1.4.3 \
   --build 1848 \
   --base-build 1847 \
-  --payload-sha256 abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+  --payload-sha256 abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 \
+  --full-archive-sha256 bbbbbb0123456789abcdef0123456789abcdef0123456789abcdef0123456789
 ```
 
 Validate an installer dry-run request:
@@ -110,12 +117,15 @@ Validate an installer dry-run request:
   "installedAppPath": "/Applications/emsi_macos.app",
   "stagedAppPath": "/Users/me/Library/Caches/emsi/update/staged.app",
   "backupAppPath": "/Users/me/Library/Caches/emsi/update/backup.app",
-  "mainProcessID": 1234,
-  "targetBundleIdentifier": "com.radlof.emsi-swift",
+  "mainAppPID": 1234,
+  "bundleIdentifier": "com.radlof.emsi-swift",
+  "teamIdentifier": "UPK4SC93AN",
   "targetReleaseID": {
     "version": "1.4.3",
     "buildNumber": 1848
-  }
+  },
+  "launchToken": "signed-launch-token",
+  "logDirectoryPath": "/Users/me/Library/Application Support/emsi/Updates/Logs"
 }
 ```
 
@@ -125,6 +135,16 @@ swift run macos-update-installer --dry-run --request installer-request.json
 
 The dry-run command prints the planned transactional steps only. It does not
 replace an app bundle.
+
+To perform an install, pass a signed request envelope and the pinned request
+public key:
+
+```sh
+swift run macos-update-installer --perform \
+  --signed-request signed-install-request.json \
+  --public-key-x963-base64 "$INSTALL_REQUEST_PUBLIC_KEY_X963_BASE64" \
+  --key-id stable-2026
+```
 
 ## Library Usage
 
@@ -233,11 +253,45 @@ let plan = DistributionKeyPlanner(bucketName: "emsi-updates-prod").plan(
     baseBuildNumber: 1847,
     payloadSHA256Values: [
         "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-    ]
+    ],
+    fullArchiveSHA256: "bbbbbb0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 )
 
 print(plan.dryRunText())
 ```
+
+Stage an update from a delta manifest, falling back to the full archive when no
+safe delta is available:
+
+```swift
+import MacOSUpdaterCore
+import MacOSUpdaterManifest
+
+let core = UpdaterCore(
+    policy: UpdateEligibilityPolicy(
+        channel: .stable,
+        bundleIdentifier: "com.radlof.emsi-swift",
+        teamIdentifier: "UPK4SC93AN",
+        architecture: .arm64
+    ),
+    stateStore: UpdateDownloadStateStore(stateURL: updateStateURL)
+)
+
+let staged = try await core.stageUpdate(
+    releaseManifest: releaseManifest,
+    installedApp: installedApp,
+    baseAppURL: installedAppURL,
+    deltaManifest: deltaManifest,
+    targetManifest: targetManifest,
+    assetLocator: UpdateAssetLocator(baseURL: updateBaseURL),
+    stagingDirectory: stagingDirectory
+)
+```
+
+The default verifier requires the staged app to pass `codesign --verify --deep
+--strict`, `spctl`, `xcrun stapler validate`, bundle identifier verification,
+and team identifier verification before replacement. This gate is used for both
+delta payload staging and full archive fallback staging.
 
 ## Host App Responsibilities
 
@@ -254,11 +308,9 @@ The consuming macOS app is responsible for:
 ## Release Workflow
 
 This section describes the intended end-to-end release flow from app changes to
-a published update. The current bootstrap package already supports changelog
-drafting, release-state modeling, executable builds, and S3/CloudFront key
-dry-runs. Full app-bundle diffing, payload compression, manifest generation,
-uploading, notarization orchestration, and production installation are planned
-follow-up work.
+a published update. The release format uses content-addressed per-file
+compressed payloads plus one content-addressed full signed, notarized, and
+stapled `.zip` fallback archive. Do not upload a raw `.app` tree.
 
 ### 1. Start From A Clean Release Branch
 
@@ -354,9 +406,8 @@ the signed `release.json` manifest and into any human-facing release notes.
 Build the package executables in release mode:
 
 ```sh
-swift build -c release \
-  --product macos-updater-release \
-  --product macos-update-installer
+swift build -c release --product macos-updater-release
+swift build -c release --product macos-update-installer
 ```
 
 The executable paths are:
@@ -411,16 +462,67 @@ desktop/macos/stable/releases/1.4.3+1848/
   target-file-manifest.json
   delta-from-1847-to-1848.json
   payloads/
-    ab/cd/<payload-sha256>.lzfse
+    ab/cd/<compressed-payload-sha256>.lzfse
+  archives/
+    <full-notarized-zip-sha256>.zip
 ```
 
 The target file manifest describes the final signed `.app` bundle. The delta
 manifest describes how to transform a verified base build into the target
-build. Payload objects contain compressed changed files.
+build. Payload objects contain compressed changed files. The archive is the
+full signed, notarized, and stapled fallback artifact.
 
-The bootstrap package does not yet generate these files from app bundles. Until
-that release generator is implemented, treat the structure above as the
-contract that the generator and CDN publisher must satisfy.
+Generate the target manifest from the signed and stapled app bundle:
+
+```sh
+swift run macos-updater-release target-manifest \
+  --app /path/to/emsi_macos.app \
+  --output release/target-file-manifest-1.4.3+1848.json \
+  --version 1.4.3 \
+  --build 1848 \
+  --bundle-id com.radlof.emsi-swift \
+  --team-id UPK4SC93AN
+```
+
+Generate the delta manifest and content-addressed payloads:
+
+```sh
+swift run macos-updater-release delta \
+  --base-manifest release/target-file-manifest-1.4.2+1847.json \
+  --target-manifest release/target-file-manifest-1.4.3+1848.json \
+  --target-app /path/to/emsi_macos.app \
+  --output-dir release/cdn \
+  --channel stable
+```
+
+Generate the full fallback archive:
+
+```sh
+swift run macos-updater-release full-archive \
+  --app /path/to/emsi_macos.app \
+  --output-dir release/cdn \
+  --channel stable \
+  --version 1.4.3 \
+  --build 1848
+```
+
+Generate the release manifest after the full archive exists:
+
+```sh
+swift run macos-updater-release release-manifest \
+  --target-manifest release/target-file-manifest-1.4.3+1848.json \
+  --full-archive release/cdn/desktop/macos/stable/releases/1.4.3+1848/archives/<full-notarized-zip-sha256>.zip \
+  --delta-manifest release/cdn/desktop/macos/stable/releases/1.4.3+1848/delta-from-1847-to-1848.json \
+  --output release/cdn/desktop/macos/stable/releases/1.4.3+1848/release.json \
+  --channel stable \
+  --version 1.4.3 \
+  --build 1848 \
+  --minimum-system-version 13.0 \
+  --minimum-supported-build 1847 \
+  --commit-sha "$(git rev-parse HEAD)" \
+  --changelog-file release/changelog-1.4.3+1848.md \
+  --architecture universal
+```
 
 ### 8. Dry-Run The CDN Keys
 
@@ -433,16 +535,18 @@ swift run macos-updater-release plan-keys \
   --build 1848 \
   --base-build 1847 \
   --payload-sha256 abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 \
+  --full-archive-sha256 bbbbbb0123456789abcdef0123456789abcdef0123456789abcdef0123456789 \
   --bucket emsi-updates-prod
 ```
 
 The dry-run output shows the safe upload order:
 
 1. payload objects;
-2. target file manifest;
-3. delta manifest;
-4. release manifest;
-5. mutable channel pointer.
+2. full notarized fallback archive;
+3. target file manifest;
+4. delta manifest;
+5. release manifest;
+6. mutable channel pointer.
 
 ### 9. Publish In Safe Order
 
@@ -452,6 +556,7 @@ referenced object exists and has the expected SHA-256 hash.
 ```text
 s3://emsi-updates-prod/
   desktop/macos/stable/releases/1.4.3+1848/payloads/...
+  desktop/macos/stable/releases/1.4.3+1848/archives/<full-notarized-zip-sha256>.zip
   desktop/macos/stable/releases/1.4.3+1848/target-file-manifest.json
   desktop/macos/stable/releases/1.4.3+1848/delta-from-1847-to-1848.json
   desktop/macos/stable/releases/1.4.3+1848/release.json
@@ -495,6 +600,10 @@ Then run a canary update against an installed base build. Confirm that the
 client requests only the changed payload URLs, stages the target bundle,
 verifies hashes and signatures, and refuses the update if any signed manifest or
 payload hash is wrong.
+
+Also run a full-archive fallback canary by withholding the base-specific delta
+manifest. Confirm that the updater downloads the `.zip` archive, expands it,
+and applies the same staged-app verification gate before replacement.
 
 ### 12. Rollback Or Correction
 

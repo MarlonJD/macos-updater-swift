@@ -56,4 +56,19 @@ public enum UpdateInstallerPlanner {
             ]
         )
     }
+
+    public static func dryRunPlan(for request: UpdateInstallRequest) -> InstallerDryRunPlan {
+        InstallerDryRunPlan(
+            steps: [
+                "Verify signed install request before invoking the helper.",
+                "Wait for process \(request.mainAppPID) to terminate.",
+                "Verify staged app at \(request.stagedAppPath) with codesign, Gatekeeper, stapler, bundle identifier, and team identifier checks.",
+                "Move installed app from \(request.installedAppPath) to backup path \(request.backupAppPath).",
+                "Move staged app into \(request.installedAppPath).",
+                "Verify installed app again with the same staged-app gate.",
+                "Launch \(request.bundleIdentifier) at release \(request.targetReleaseID).",
+                "Restore backup if launch verification fails."
+            ]
+        )
+    }
 }

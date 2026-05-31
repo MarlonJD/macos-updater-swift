@@ -12,6 +12,13 @@ public enum ManifestCoding {
         return try encoder.encode(value)
     }
 
+    public static func prettyJSONData<T: Encodable>(for value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(value)
+    }
+
     public static func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601

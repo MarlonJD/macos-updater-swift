@@ -62,11 +62,18 @@ public struct UpdateDecision: Equatable, Sendable {
     public let targetReleaseID: ReleaseID
     public let targetBuildNumber: Int
     public let deltaManifestSHA256: String?
+    public let fullArchive: FullArchiveMetadata?
 
-    public init(targetReleaseID: ReleaseID, targetBuildNumber: Int, deltaManifestSHA256: String?) {
+    public init(
+        targetReleaseID: ReleaseID,
+        targetBuildNumber: Int,
+        deltaManifestSHA256: String?,
+        fullArchive: FullArchiveMetadata?
+    ) {
         self.targetReleaseID = targetReleaseID
         self.targetBuildNumber = targetBuildNumber
         self.deltaManifestSHA256 = deltaManifestSHA256
+        self.fullArchive = fullArchive
     }
 }
 
@@ -132,7 +139,8 @@ public struct UpdateEligibilityPolicy: Sendable {
         return UpdateDecision(
             targetReleaseID: releaseManifest.releaseID,
             targetBuildNumber: releaseManifest.buildNumber,
-            deltaManifestSHA256: releaseManifest.deltaManifestSHA256ByBaseBuild[installedApp.buildNumber]
+            deltaManifestSHA256: releaseManifest.deltaManifestSHA256ByBaseBuild[installedApp.buildNumber],
+            fullArchive: releaseManifest.fullArchive
         )
     }
 }

@@ -52,6 +52,50 @@ public struct CompressedPayloadMetadata: Codable, Equatable, Sendable {
     }
 }
 
+public struct FullArchiveMetadata: Codable, Equatable, Sendable {
+    public let compression: PayloadCompression
+    public let size: Int64
+    public let sha256: String
+    public let storageKey: String
+    public let notarized: Bool
+    public let stapled: Bool
+
+    public init(
+        compression: PayloadCompression = .none,
+        size: Int64,
+        sha256: String,
+        storageKey: String,
+        notarized: Bool,
+        stapled: Bool
+    ) {
+        self.compression = compression
+        self.size = size
+        self.sha256 = sha256
+        self.storageKey = storageKey
+        self.notarized = notarized
+        self.stapled = stapled
+    }
+}
+
+public struct NotarizationEvidence: Codable, Equatable, Sendable {
+    public let codesignVerified: Bool
+    public let gatekeeperAccepted: Bool
+    public let staplerValidated: Bool
+    public let checkedAt: Date
+
+    public init(
+        codesignVerified: Bool,
+        gatekeeperAccepted: Bool,
+        staplerValidated: Bool,
+        checkedAt: Date
+    ) {
+        self.codesignVerified = codesignVerified
+        self.gatekeeperAccepted = gatekeeperAccepted
+        self.staplerValidated = staplerValidated
+        self.checkedAt = checkedAt
+    }
+}
+
 public enum BundleEntryKind: String, Codable, Sendable {
     case file
     case directory
@@ -64,6 +108,7 @@ public struct FileManifestEntry: Codable, Equatable, Sendable {
     public let size: Int64?
     public let sha256: String?
     public let executable: Bool
+    public let mode: UInt16?
     public let symlinkDestination: String?
     public let codeUnitIdentifier: String?
 
@@ -73,6 +118,7 @@ public struct FileManifestEntry: Codable, Equatable, Sendable {
         size: Int64? = nil,
         sha256: String? = nil,
         executable: Bool = false,
+        mode: UInt16? = nil,
         symlinkDestination: String? = nil,
         codeUnitIdentifier: String? = nil
     ) {
@@ -81,8 +127,13 @@ public struct FileManifestEntry: Codable, Equatable, Sendable {
         self.size = size
         self.sha256 = sha256
         self.executable = executable
+        self.mode = mode
         self.symlinkDestination = symlinkDestination
         self.codeUnitIdentifier = codeUnitIdentifier
+    }
+
+    public var isSignatureSidecar: Bool {
+        path == "Contents/_CodeSignature/CodeResources" || path.contains("/_CodeSignature/")
     }
 }
 
@@ -173,6 +224,8 @@ public struct ReleaseManifest: Codable, Equatable, Sendable {
     public let changelog: String
     public let targetFileManifestSHA256: String
     public let deltaManifestSHA256ByBaseBuild: [Int: String]
+    public let fullArchive: FullArchiveMetadata?
+    public let notarization: NotarizationEvidence?
     public let publishedAt: Date
 
     public init(
@@ -191,6 +244,8 @@ public struct ReleaseManifest: Codable, Equatable, Sendable {
         changelog: String,
         targetFileManifestSHA256: String,
         deltaManifestSHA256ByBaseBuild: [Int: String],
+        fullArchive: FullArchiveMetadata? = nil,
+        notarization: NotarizationEvidence? = nil,
         publishedAt: Date
     ) {
         self.schemaVersion = schemaVersion
@@ -208,6 +263,39 @@ public struct ReleaseManifest: Codable, Equatable, Sendable {
         self.changelog = changelog
         self.targetFileManifestSHA256 = targetFileManifestSHA256
         self.deltaManifestSHA256ByBaseBuild = deltaManifestSHA256ByBaseBuild
+        self.fullArchive = fullArchive
+        self.notarization = notarization
+        self.publishedAt = publishedAt
+    }
+}
+
+public struct ChannelManifest: Codable, Equatable, Sendable {
+    public let schemaVersion: Int
+    public let channel: UpdateChannel
+    public let releaseID: ReleaseID
+    public let releaseManifestSHA256: String
+    public let releaseManifestStorageKey: String
+    public let mandatory: Bool
+    public let summary: String
+    public let publishedAt: Date
+
+    public init(
+        schemaVersion: Int = 1,
+        channel: UpdateChannel,
+        releaseID: ReleaseID,
+        releaseManifestSHA256: String,
+        releaseManifestStorageKey: String,
+        mandatory: Bool = false,
+        summary: String,
+        publishedAt: Date
+    ) {
+        self.schemaVersion = schemaVersion
+        self.channel = channel
+        self.releaseID = releaseID
+        self.releaseManifestSHA256 = releaseManifestSHA256
+        self.releaseManifestStorageKey = releaseManifestStorageKey
+        self.mandatory = mandatory
+        self.summary = summary
         self.publishedAt = publishedAt
     }
 }
