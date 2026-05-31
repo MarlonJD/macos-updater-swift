@@ -26,6 +26,13 @@ privileged helper registration, and UI integration. The consuming macOS app owns
 those concerns. The package also does not adopt Sparkle or any third-party
 updater framework.
 
+## License
+
+Copyright (C) 2026 Burak Karahan.
+
+Licensed under the GNU Lesser General Public License v3.0 or later
+(`LGPL-3.0-or-later`).
+
 ## Development
 
 Run the test suite:
