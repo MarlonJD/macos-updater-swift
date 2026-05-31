@@ -1,0 +1,6 @@
+feat(updater): add signed manifest envelope
+fix(core): reject stale build numbers
+docs: update docs only
+refactor: clean release planner internals
+feat(manifest)!: require P-256 signatures
+perf(release): sort payload uploads
